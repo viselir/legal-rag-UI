@@ -22,19 +22,27 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+): Promise<void> {
   if (req.method === "GET") {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    return res.status(200).send("chat endpoint OK");
+    res.status(200).send("chat endpoint OK");
+    return;
   }
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST") {
+    res.status(405).end();
+    return;
+  }
 
   const body = (req.body ?? {}) as { prompt?: unknown; history?: unknown };
   const prompt = typeof body.prompt === "string" ? body.prompt : undefined;
   const history = Array.isArray(body.history) ? (body.history as HistoryMsg[]) : ([] as HistoryMsg[]);
 
   if (!prompt) {
-    return res.status(400).json({ error: "Missing 'prompt' string" });
+    res.status(400).json({ error: "Missing 'prompt' string" });
+    return;
   }
 
   const controller = new AbortController();
@@ -53,20 +61,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
 
     if (!r.ok) {
+      // נסיון לפרש שגיאה כ-JSON כדי להחזיר הודעה קריאה
       try {
         const j = JSON.parse(text) as { detail?: unknown; error?: unknown };
-        const msg = (typeof j.detail === "string" && j.detail) ||
-                    (typeof j.error === "string" && j.error) ||
-                    text;
-        return res.status(r.status).send(msg);
+        const msg =
+          (typeof j.detail === "string" && j.detail) ||
+          (typeof j.error === "string" && j.error) ||
+          text;
+        res.status(r.status).send(msg);
       } catch {
-        return res.status(r.status).send(text);
+        res.status(r.status).send(text);
       }
+      return;
     }
 
-    return res.status(200).send(text);
+    res.status(200).send(text);
+    return;
   } catch (err: unknown) {
-    return res.status(502).json({ error: errorMessage(err) });
+    res.status(502).json({ error: errorMessage(err) });
+    return;
   } finally {
     clearTimeout(timeout);
   }
