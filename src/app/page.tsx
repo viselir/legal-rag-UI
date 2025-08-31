@@ -2,8 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
-
-type Msg = { role: "user" | "assistant"; content: string };
+type Role = "user" | "assistant";
+type Msg = { role: Role; content: string };
 
 const SUGGESTIONS = [
   "מה שם ההסכם?",
@@ -14,7 +14,8 @@ const SUGGESTIONS = [
 
 function splitAnswer(raw: string) {
   // מנקה רעשי REPL/כותרות
-  let t = (raw || "").trim()
+  const t = (raw || "")
+    .trim()
     .replace(/^RAG REPL.*\n?/i, "")
     .replace(/^Type your prompt.*\n?/i, "")
     .replace(/^Type your question.*\n?/i, "")
@@ -25,11 +26,8 @@ function splitAnswer(raw: string) {
   const SOURCES = "=== Sources ===";
 
   let answer = t;
-  let sources: string[] = [];
-
-  // יש "Answer" ו/או "Sources"?
-  const aIdx = t.indexOf(ANSWER);
   const sIdx = t.indexOf(SOURCES);
+  const aIdx = t.indexOf(ANSWER);
 
   if (aIdx !== -1 && sIdx !== -1) {
     const inner = t.slice(aIdx + ANSWER.length, sIdx).trim();
@@ -40,15 +38,27 @@ function splitAnswer(raw: string) {
     answer = t.slice(0, sIdx).trim();
   }
 
+  const sources: string[] = [];
   if (sIdx !== -1) {
     const srcText = t.slice(sIdx + SOURCES.length).trim();
-    sources = srcText
+    srcText
       .split(/\r?\n/)
       .map((l) => l.replace(/^[\s•*\-–]+/, "").trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .forEach((s) => sources.push(s));
   }
 
   return { answer, sources };
+}
+
+function errorMessage(err: unknown): string {
+  if (typeof err === "object" && err !== null) {
+    const name = (err as { name?: string }).name;
+    const message = (err as { message?: string }).message;
+    if (name === "AbortError") return "Backend timeout";
+    if (typeof message === "string") return message;
+  }
+  return String(err);
 }
 
 export default function Page() {
@@ -60,7 +70,6 @@ export default function Page() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // גלילה לתחתית בכל הודעה חדשה
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, busy]);
@@ -72,31 +81,42 @@ export default function Page() {
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: text }]);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: text, history: [] }),
+        cache: "no-store",
+        signal: controller.signal,
       });
 
-      const raw = await r.text(); // קוראים פעם אחת
+      const raw = await r.text();
       if (!r.ok) {
-        let msg = raw;
+        // מנסה לפרש שגיאה-JSON כדי להחזיר הודעה קריאה
         try {
-          const j = JSON.parse(raw);
-          msg = j?.error || j?.detail || raw;
-        } catch {}
-        setMessages((prev) => [...prev, { role: "assistant", content: `שגיאה מהשרת: ${msg}` }]);
+          const j = JSON.parse(raw) as { error?: unknown; detail?: unknown };
+          const msg =
+            (typeof j.error === "string" && j.error) ||
+            (typeof j.detail === "string" && j.detail) ||
+            raw;
+          setMessages((prev) => [...prev, { role: "assistant", content: `שגיאה מהשרת: ${msg}` }]);
+        } catch {
+          setMessages((prev) => [...prev, { role: "assistant", content: `שגיאה מהשרת: ${raw}` }]);
+        }
         return;
       }
 
       setMessages((prev) => [...prev, { role: "assistant", content: raw || "—" }]);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `שגיאת רשת: ${e?.message || String(e)}` },
+        { role: "assistant", content: `שגיאת רשת: ${errorMessage(err)}` },
       ]);
     } finally {
+      clearTimeout(timeout);
       setBusy(false);
     }
   }
@@ -114,7 +134,9 @@ export default function Page() {
     async function copyAll() {
       try {
         await navigator.clipboard.writeText(answer || content);
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     return (
@@ -132,7 +154,9 @@ export default function Page() {
                 <div className="mb-1 font-medium opacity-80">מקורות</div>
                 <ul className="list-disc ps-5 space-y-1">
                   {sources.map((s, i) => (
-                    <li key={i} className="text-[0.85rem]">{s}</li>
+                    <li key={i} className="text-[0.85rem]">
+                      {s}
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -237,18 +261,21 @@ export default function Page() {
             <p className="mt-2 text-xs opacity-70">Enter לשליחה, Shift+Enter לשורה חדשה</p>
           </div>
         </div>
-       
-        <footer className="mt-8 flex items-center justify-center gap-3
-                   text-sm md:text-base text-neutral-600 dark:text-neutral-300">
-        <span>powered by <strong className="font-semibold text-neutral-800 dark:text-neutral-100">Elad Data</strong></span>
-        <img
-        src="https://eladsoft.com/wp-content/uploads/2022/04/Elad-logo-color.png"
-        alt="Elad Data logo"
-        className="h-6 md:h-8 w-auto"
-        loading="lazy"
-         />
-        </footer>
 
+        {/* Footer – powered by */}
+        <footer className="mt-8 flex items-center justify-center gap-3 text-sm md:text-base text-neutral-600 dark:text-neutral-300">
+          <span>
+            powered by <strong className="font-semibold text-neutral-800 dark:text-neutral-100">Elad Data</strong>
+          </span>
+          <Image
+            src="https://eladsoft.com/wp-content/uploads/2022/04/Elad-logo-color.png"
+            alt="Elad Data logo"
+            width={180}
+            height={52}
+            className="h-6 md:h-8 w-auto"
+            priority
+          />
+        </footer>
       </div>
     </main>
   );
